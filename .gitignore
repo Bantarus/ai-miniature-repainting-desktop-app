@@ -19,6 +19,7 @@ python/.venv/
 python/build/
 python/dist/
 python/*.spec
+.venv/
 
 # Rust build output
 src-tauri/target

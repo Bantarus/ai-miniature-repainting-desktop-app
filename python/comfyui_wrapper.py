@@ -9,9 +9,10 @@ machine learning dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from .inference import GenerationRequest
+if TYPE_CHECKING:
+    from .inference import GenerationRequest
 
 
 @dataclass(slots=True)
@@ -26,7 +27,7 @@ def bootstrap_if_required() -> None:
     """Placeholder for ComfyUI bootstrap logic."""
 
 
-def generate_preview(request: GenerationRequest) -> BackendResult:
+def generate_preview(request: "GenerationRequest") -> BackendResult:
     """Return a mock response that mirrors the future ComfyUI payload."""
 
     # The actual implementation will submit a workflow to ComfyUI and poll for

@@ -177,9 +177,11 @@ impl PythonBridge {
                 };
 
                 let result = module.call_method1("generate", (py_request.into_py(py),))?;
-                let response_value: serde_json::Value = result.extract()?;
+                let json_module = py.import_bound("json")?;
+                let response_json: String =
+                    json_module.call_method1("dumps", (result,))?.extract()?;
 
-                serde_json::from_value(response_value)
+                serde_json::from_str(&response_json)
                     .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
             })
             .map_err(BridgeError::from)
@@ -230,18 +232,21 @@ impl PythonBridge {
             return Ok(module.clone());
         }
 
-        let python_root = Self::locate_python_root(app)?;
-        let python_path = Self::build_pythonpath(&python_root)?;
+        let python_dir = Self::locate_python_root(app)?;
+        let module_root = python_dir.parent().ok_or_else(|| {
+            BridgeError::new("Python runtime directory is missing a parent directory")
+        })?;
+        let python_path = Self::build_pythonpath(module_root)?;
 
         std::env::set_var("PYTHONPATH", &python_path);
-        self.spawn_sidecar(&python_root, &python_path)?;
+        self.spawn_sidecar(&python_dir, &python_path)?;
 
         let module = Python::with_gil(|py| -> PyResult<Py<PyModule>> {
             let sys = py.import_bound("sys")?;
             let sys_path = sys.getattr("path")?.downcast_into::<PyList>()?;
 
-            let root_str = python_root.to_str().ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Invalid Python root path")
+            let root_str = module_root.to_str().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Invalid Python module path")
             })?;
 
             if !sys_path.iter().any(|entry| {
@@ -267,14 +272,14 @@ impl PythonBridge {
         Ok(module)
     }
 
-    fn spawn_sidecar(&self, python_root: &Path, python_path: &OsString) -> Result<(), BridgeError> {
+    fn spawn_sidecar(&self, python_dir: &Path, python_path: &OsString) -> Result<(), BridgeError> {
         let mut guard = self.sidecar.lock();
 
         if guard.is_some() {
             return Ok(());
         }
 
-        let Some((program, args)) = Self::sidecar_invocation(python_root) else {
+        let Some((program, args)) = Self::sidecar_invocation(python_dir) else {
             return Err(BridgeError::new(
                 "Unable to locate Python sidecar executable or script",
             ));
@@ -296,12 +301,12 @@ impl PythonBridge {
         Ok(())
     }
 
-    fn sidecar_invocation(python_root: &Path) -> Option<(PathBuf, Vec<OsString>)> {
+    fn sidecar_invocation(python_dir: &Path) -> Option<(PathBuf, Vec<OsString>)> {
         if let Some(explicit) = std::env::var_os("PYTHON_SIDECAR") {
             return Some((PathBuf::from(explicit), Vec::new()));
         }
 
-        let dist_dir = python_root.join("dist");
+        let dist_dir = python_dir.join("dist");
         let binary_name = if cfg!(windows) {
             "inference-sidecar.exe"
         } else {
@@ -313,7 +318,7 @@ impl PythonBridge {
             return Some((binary_path, Vec::new()));
         }
 
-        let script_path = python_root.join("sidecar.py");
+        let script_path = python_dir.join("sidecar.py");
         if script_path.exists() {
             let interpreter = std::env::var_os("PYTHON_EXECUTABLE")
                 .map(PathBuf::from)
@@ -331,12 +336,12 @@ impl PythonBridge {
         None
     }
 
-    fn build_pythonpath(python_root: &Path) -> Result<OsString, BridgeError> {
-        let mut paths = vec![python_root.to_path_buf()];
+    fn build_pythonpath(module_root: &Path) -> Result<OsString, BridgeError> {
+        let mut paths = vec![module_root.to_path_buf()];
 
         if let Some(existing) = std::env::var_os("PYTHONPATH") {
             for entry in std::env::split_paths(&existing) {
-                if entry != python_root {
+                if entry != module_root {
                     paths.push(entry);
                 }
             }

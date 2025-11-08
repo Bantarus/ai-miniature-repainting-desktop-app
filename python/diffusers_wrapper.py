@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from .inference import GenerationRequest
+if TYPE_CHECKING:
+    from .inference import GenerationRequest
 
 
 @dataclass(slots=True)
@@ -14,7 +15,7 @@ class BackendResult:
     output_path: Optional[str] = None
 
 
-def generate_preview(request: GenerationRequest) -> BackendResult:
+def generate_preview(request: "GenerationRequest") -> BackendResult:
     """Provide a deterministic placeholder response for Diffusers flows."""
 
     del request
