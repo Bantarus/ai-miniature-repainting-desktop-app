@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 use tokio::task;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,7 +147,7 @@ impl PythonBridge {
         app: &AppHandle,
         request: GenerationRequest,
     ) -> Result<GenerationResponse, BridgeError> {
-        let module = self.ensure_initialized(app)?;
+        let python_module = self.ensure_initialized(app)?;
         let total_steps = request.steps.max(1);
 
         let start_update = ProgressUpdate {
@@ -158,14 +159,28 @@ impl PythonBridge {
 
         app.emit("generation-progress", start_update)?;
 
-        let request_value = serde_json::to_value(&request)?;
+        let request_for_python = request;
 
         let response = task::spawn_blocking(move || -> Result<GenerationResponse, BridgeError> {
             Python::with_gil(|py| -> PyResult<GenerationResponse> {
-                let module = module.as_ref(py);
-                let py_request: PyObject = request_value.into_py(py);
-                let result = module.call_method1("generate", (py_request,))?;
-                result.extract::<GenerationResponse>()
+                let module = python_module.bind(py);
+                let py_request = PyDict::new_bound(py);
+
+                py_request.set_item("prompt", &request_for_python.prompt)?;
+                py_request.set_item("model", &request_for_python.model)?;
+                py_request.set_item("steps", request_for_python.steps)?;
+                py_request.set_item("guidance_scale", request_for_python.guidance_scale)?;
+
+                match &request_for_python.negative_prompt {
+                    Some(value) => py_request.set_item("negative_prompt", value)?,
+                    None => py_request.set_item("negative_prompt", py.None())?,
+                };
+
+                let result = module.call_method1("generate", (py_request.into_py(py),))?;
+                let response_value: serde_json::Value = result.extract()?;
+
+                serde_json::from_value(response_value)
+                    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
             })
             .map_err(BridgeError::from)
         })
@@ -222,8 +237,8 @@ impl PythonBridge {
         self.spawn_sidecar(&python_root, &python_path)?;
 
         let module = Python::with_gil(|py| -> PyResult<Py<PyModule>> {
-            let sys = py.import("sys")?;
-            let sys_path: &pyo3::types::PyList = sys.getattr("path")?.downcast()?;
+            let sys = py.import_bound("sys")?;
+            let sys_path = sys.getattr("path")?.downcast_into::<PyList>()?;
 
             let root_str = python_root.to_str().ok_or_else(|| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Invalid Python root path")
@@ -238,9 +253,9 @@ impl PythonBridge {
                 sys_path.insert(0, root_str)?;
             }
 
-            let module = PyModule::import(py, "python.inference")?;
+            let module = PyModule::import_bound(py, "python.inference")?;
             module.call_method0("load_runtime")?;
-            Ok(module.into())
+            Ok(module.unbind())
         })?;
 
         self.module
@@ -331,13 +346,13 @@ impl PythonBridge {
     }
 
     fn locate_python_root(app: &AppHandle) -> Result<PathBuf, BridgeError> {
-        if let Some(resource) = app.path_resolver().resolve_resource("python") {
+        if let Ok(resource) = app.path().resolve("python", BaseDirectory::Resource) {
             if resource.exists() {
                 return Ok(resource);
             }
         }
 
-        if let Some(resource_dir) = app.path_resolver().resource_dir() {
+        if let Ok(resource_dir) = app.path().resource_dir() {
             let candidate = resource_dir.join("python");
             if candidate.exists() {
                 return Ok(candidate);
