@@ -28,7 +28,7 @@
     "targets": "all",
     "icon": [],
     "resources": [
-      "../python/**"
+      "../python/**/*"
     ]
   }
 }
