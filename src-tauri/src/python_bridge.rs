@@ -2,7 +2,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
+use tokio::time::sleep;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,7 +127,7 @@ impl PythonBridge {
 
             app.emit("generation-progress", update)
                 .map_err(BridgeError::from)?;
-            tauri::async_runtime::sleep(Duration::from_millis(50)).await;
+            sleep(Duration::from_millis(50)).await;
         }
 
         let response = GenerationResponse {
