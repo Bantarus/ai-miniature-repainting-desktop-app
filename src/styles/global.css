@@ -1,0 +1,9 @@
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--spectrum-alias-body-text-font-family, "Adobe Clean", sans-serif);
+  background-color: var(--spectrum-global-color-gray-900);
+}
