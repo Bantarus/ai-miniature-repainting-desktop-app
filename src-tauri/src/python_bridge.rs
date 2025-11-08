@@ -1,9 +1,14 @@
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
+use once_cell::sync::OnceCell;
+use parking_lot::Mutex;
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
-use tokio::time::sleep;
+use tokio::task;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,15 +87,55 @@ impl From<tauri::Error> for BridgeError {
     }
 }
 
+impl From<pyo3::PyErr> for BridgeError {
+    fn from(value: pyo3::PyErr) -> Self {
+        Self::new(value.to_string())
+    }
+}
+
+impl From<std::io::Error> for BridgeError {
+    fn from(value: std::io::Error) -> Self {
+        Self::new(value.to_string())
+    }
+}
+
+impl From<serde_json::Error> for BridgeError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::new(value.to_string())
+    }
+}
+
+impl From<tokio::task::JoinError> for BridgeError {
+    fn from(value: tokio::task::JoinError) -> Self {
+        Self::new(value.to_string())
+    }
+}
+
 #[derive(Debug)]
 pub struct PythonBridge {
-    initialized: AtomicBool,
+    module: OnceCell<Py<PyModule>>,
+    init_lock: Mutex<()>,
+    sidecar: Mutex<Option<Child>>,
+    ready: AtomicBool,
 }
 
 impl Default for PythonBridge {
     fn default() -> Self {
+        pyo3::prepare_freethreaded_python();
+
         Self {
-            initialized: AtomicBool::new(false),
+            module: OnceCell::new(),
+            init_lock: Mutex::new(()),
+            sidecar: Mutex::new(None),
+            ready: AtomicBool::new(false),
+        }
+    }
+}
+
+impl Drop for PythonBridge {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.sidecar.lock().take() {
+            let _ = child.kill();
         }
     }
 }
@@ -101,51 +146,221 @@ impl PythonBridge {
         app: &AppHandle,
         request: GenerationRequest,
     ) -> Result<GenerationResponse, BridgeError> {
-        self.initialized.store(true, Ordering::SeqCst);
+        let module = self.ensure_initialized(app)?;
+        let total_steps = request.steps.max(1);
 
-        let GenerationRequest {
-            prompt,
-            negative_prompt,
-            model,
-            steps,
-            guidance_scale,
-        } = request;
-
-        let total_steps = steps.max(1);
-
-        for step in 0..=total_steps {
-            let update = ProgressUpdate {
-                current: step,
-                total: total_steps,
-                percentage: if total_steps == 0 {
-                    0.0
-                } else {
-                    (step as f32 / total_steps as f32) * 100.0
-                },
-                message: None,
-            };
-
-            app.emit("generation-progress", update)
-                .map_err(BridgeError::from)?;
-            sleep(Duration::from_millis(50)).await;
-        }
-
-        let response = GenerationResponse {
-            status: GenerationStatus::Completed,
-            output_path: None,
-            metadata: GenerationMetadata {
-                prompt,
-                negative_prompt,
-                model,
-                steps: total_steps,
-                guidance_scale,
-            },
+        let start_update = ProgressUpdate {
+            current: 0,
+            total: total_steps,
+            percentage: 0.0,
+            message: Some("Starting Python generation".to_string()),
         };
+
+        app.emit("generation-progress", start_update)?;
+
+        let request_value = serde_json::to_value(&request)?;
+
+        let response = task::spawn_blocking(move || -> Result<GenerationResponse, BridgeError> {
+            Python::with_gil(|py| -> PyResult<GenerationResponse> {
+                let module = module.as_ref(py);
+                let py_request: PyObject = request_value.into_py(py);
+                let result = module.call_method1("generate", (py_request,))?;
+                result.extract::<GenerationResponse>()
+            })
+            .map_err(BridgeError::from)
+        })
+        .await??;
+
+        let complete_update = ProgressUpdate {
+            current: total_steps,
+            total: total_steps,
+            percentage: 100.0,
+            message: Some("Python generation completed".to_string()),
+        };
+
+        app.emit("generation-progress", complete_update)?;
 
         Ok(response)
     }
 
     pub async fn health_check(&self) -> Result<bool, BridgeError> {
-        Ok(self.initialized.load(Ordering::SeqCst))
+        let mut running = false;
+
+        let mut sidecar_guard = self.sidecar.lock();
+        if let Some(child) = sidecar_guard.as_mut() {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    sidecar_guard.take();
+                }
+                Ok(None) => {
+                    running = true;
+                }
+                Err(_) => {
+                    sidecar_guard.take();
+                }
+            }
+        }
+
+        Ok(self.ready.load(Ordering::SeqCst) && running)
+    }
+
+    fn ensure_initialized(&self, app: &AppHandle) -> Result<Py<PyModule>, BridgeError> {
+        if let Some(module) = self.module.get() {
+            return Ok(module.clone());
+        }
+
+        let _guard = self.init_lock.lock();
+
+        if let Some(module) = self.module.get() {
+            return Ok(module.clone());
+        }
+
+        let python_root = Self::locate_python_root(app)?;
+        let python_path = Self::build_pythonpath(&python_root)?;
+
+        std::env::set_var("PYTHONPATH", &python_path);
+        self.spawn_sidecar(&python_root, &python_path)?;
+
+        let module = Python::with_gil(|py| -> PyResult<Py<PyModule>> {
+            let sys = py.import("sys")?;
+            let sys_path: &pyo3::types::PyList = sys.getattr("path")?.downcast()?;
+
+            let root_str = python_root.to_str().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Invalid Python root path")
+            })?;
+
+            if !sys_path.iter().any(|entry| {
+                entry
+                    .extract::<&str>()
+                    .map(|p| p == root_str)
+                    .unwrap_or(false)
+            }) {
+                sys_path.insert(0, root_str)?;
+            }
+
+            let module = PyModule::import(py, "python.inference")?;
+            module.call_method0("load_runtime")?;
+            Ok(module.into())
+        })?;
+
+        self.module
+            .set(module.clone())
+            .map_err(|_| BridgeError::new("Python module already initialised"))?;
+
+        self.ready.store(true, Ordering::SeqCst);
+
+        Ok(module)
+    }
+
+    fn spawn_sidecar(&self, python_root: &Path, python_path: &OsString) -> Result<(), BridgeError> {
+        let mut guard = self.sidecar.lock();
+
+        if guard.is_some() {
+            return Ok(());
+        }
+
+        let Some((program, args)) = Self::sidecar_invocation(python_root) else {
+            return Err(BridgeError::new(
+                "Unable to locate Python sidecar executable or script",
+            ));
+        };
+
+        let mut command = Command::new(program);
+        if !args.is_empty() {
+            command.args(&args);
+        }
+
+        command.env("PYTHONPATH", python_path);
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
+
+        let child = command.spawn()?;
+        *guard = Some(child);
+
+        Ok(())
+    }
+
+    fn sidecar_invocation(python_root: &Path) -> Option<(PathBuf, Vec<OsString>)> {
+        if let Some(explicit) = std::env::var_os("PYTHON_SIDECAR") {
+            return Some((PathBuf::from(explicit), Vec::new()));
+        }
+
+        let dist_dir = python_root.join("dist");
+        let binary_name = if cfg!(windows) {
+            "inference-sidecar.exe"
+        } else {
+            "inference-sidecar"
+        };
+        let binary_path = dist_dir.join(binary_name);
+
+        if binary_path.exists() {
+            return Some((binary_path, Vec::new()));
+        }
+
+        let script_path = python_root.join("sidecar.py");
+        if script_path.exists() {
+            let interpreter = std::env::var_os("PYTHON_EXECUTABLE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    if cfg!(windows) {
+                        PathBuf::from("python.exe")
+                    } else {
+                        PathBuf::from("python3")
+                    }
+                });
+
+            return Some((interpreter, vec![script_path.into_os_string()]));
+        }
+
+        None
+    }
+
+    fn build_pythonpath(python_root: &Path) -> Result<OsString, BridgeError> {
+        let mut paths = vec![python_root.to_path_buf()];
+
+        if let Some(existing) = std::env::var_os("PYTHONPATH") {
+            for entry in std::env::split_paths(&existing) {
+                if entry != python_root {
+                    paths.push(entry);
+                }
+            }
+        }
+
+        std::env::join_paths(paths).map_err(|_| BridgeError::new("Failed to construct PYTHONPATH"))
+    }
+
+    fn locate_python_root(app: &AppHandle) -> Result<PathBuf, BridgeError> {
+        if let Some(resource) = app.path_resolver().resolve_resource("python") {
+            if resource.exists() {
+                return Ok(resource);
+            }
+        }
+
+        if let Some(resource_dir) = app.path_resolver().resource_dir() {
+            let candidate = resource_dir.join("python");
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+
+        let mut current_dir = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+        for _ in 0..5 {
+            let candidate = current_dir.join("python");
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+            if !current_dir.pop() {
+                break;
+            }
+        }
+
+        Err(BridgeError::new(
+            "Unable to locate the Python runtime directory",
+        ))
     }
 }
