@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { UnlistenFn, listen } from "@tauri-apps/api/event";
 
-export type InferenceModel = "flux-kontext" | "qwen-image-edit";
+export type InferenceModel = "flux2-klein" | "flux-kontext" | "qwen-image-edit";
 
 export interface GenerationRequest {
   prompt: string;
@@ -9,6 +9,8 @@ export interface GenerationRequest {
   model: InferenceModel;
   steps: number;
   guidanceScale: number;
+  /** Absolute path to the source miniature image being edited. */
+  sourceImagePath?: string;
 }
 
 export type GenerationStatus = "pending" | "running" | "completed" | "failed";
@@ -19,6 +21,7 @@ export interface GenerationMetadata {
   model: InferenceModel;
   steps: number;
   guidanceScale: number;
+  sourceImagePath?: string | null;
 }
 
 export interface GenerationResponse {
@@ -55,5 +58,6 @@ export function buildGenerationRequest(partial: Partial<GenerationRequest>): Gen
     model: partial.model ?? "flux-kontext",
     steps: partial.steps ?? 30,
     guidanceScale: partial.guidanceScale ?? 6.5,
+    sourceImagePath: partial.sourceImagePath,
   };
 }

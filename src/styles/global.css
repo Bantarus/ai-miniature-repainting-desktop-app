@@ -5,5 +5,8 @@ html, body, #root {
 body {
   margin: 0;
   font-family: var(--spectrum-alias-body-text-font-family, "Adobe Clean", sans-serif);
-  background-color: var(--spectrum-global-color-gray-900);
+  /* Spectrum's dark theme inverts the gray scale (gray-900 is near-white), and the
+     CSS variable is only defined inside the Provider, so use an explicit dark base. */
+  background-color: #1d1d1d;
+  color-scheme: dark;
 }

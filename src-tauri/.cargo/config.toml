@@ -1,0 +1,5 @@
+# Build PyO3 against the project-local venv on E: (CUDA torch + diffusers stack)
+# instead of the system Python. This makes the embedded interpreter link/configure
+# against the venv so the heavy ML packages are importable at runtime.
+[env]
+PYO3_PYTHON = "E:\\CLAUDE-CODE\\ai-miniature-repainting-desktop-app\\.venv\\Scripts\\python.exe"

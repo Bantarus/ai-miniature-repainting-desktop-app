@@ -7,10 +7,12 @@ use python_bridge::PythonBridge;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(PythonBridge::default())
         .invoke_handler(tauri::generate_handler![
             commands::generate_image,
-            commands::python_health
+            commands::python_health,
+            commands::resolve_doc_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -15,17 +15,18 @@ export function AppShell(): JSX.Element {
           <View
             width={{ base: "size-3400", L: "size-3600" }}
             borderEndWidth="thin"
-            borderColor="gray-800"
+            borderColor="gray-300"
             padding="size-200"
             minWidth="size-3200"
-            backgroundColor="gray-900"
+            backgroundColor="gray-100"
+            UNSAFE_style={{ overflowY: "auto" }}
           >
             <PromptPanel
               isGenerating={generation.isGenerating}
               onSubmit={generation.startGeneration}
             />
           </View>
-          <View flex={1} minWidth={0} padding="size-300" backgroundColor="gray-900">
+          <View flex={1} minWidth={0} padding="size-300" backgroundColor="gray-75">
             <PreviewPanel
               isGenerating={generation.isGenerating}
               progress={generation.progress}

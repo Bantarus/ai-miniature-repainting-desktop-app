@@ -9,9 +9,11 @@ machine learning dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
-if TYPE_CHECKING:
+from . import image_ops
+
+if TYPE_CHECKING:  # Avoid a runtime circular import with the inference module.
     from .inference import GenerationRequest
 
 
@@ -27,12 +29,20 @@ def bootstrap_if_required() -> None:
     """Placeholder for ComfyUI bootstrap logic."""
 
 
-def generate_preview(request: "GenerationRequest") -> BackendResult:
-    """Return a mock response that mirrors the future ComfyUI payload."""
+def generate_preview(
+    request: GenerationRequest,
+    progress: Optional[Callable[..., Any]] = None,
+) -> BackendResult:
+    """Render a repainting preview for the ComfyUI-backed models.
 
-    # The actual implementation will submit a workflow to ComfyUI and poll for
-    # progress updates. For now we simply echo back the request metadata.
-    return BackendResult(status="completed", output_path=None)
+    The real implementation will submit a workflow to ComfyUI and poll it for
+    progress updates; for now we render a placeholder preview from the uploaded
+    image while driving the same progress callback.
+    """
+
+    output_path = image_ops.render_edit(request, progress=progress, backend="comfyui")
+    status = "completed" if output_path else "failed"
+    return BackendResult(status=status, output_path=output_path)
 
 
 __all__ = ["BackendResult", "bootstrap_if_required", "generate_preview"]
