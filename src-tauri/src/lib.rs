@@ -11,6 +11,7 @@ pub fn run() {
         .manage(PythonBridge::default())
         .invoke_handler(tauri::generate_handler![
             commands::generate_image,
+            commands::preload_model,
             commands::python_health,
             commands::resolve_doc_path
         ])

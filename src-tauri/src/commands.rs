@@ -18,6 +18,18 @@ pub async fn generate_image(
 }
 
 #[tauri::command]
+pub async fn preload_model(
+    app: AppHandle,
+    bridge: State<'_, PythonBridge>,
+    model: String,
+) -> Result<bool, String> {
+    bridge
+        .preload_model(&app, model)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn python_health(bridge: State<'_, PythonBridge>) -> Result<bool, String> {
     bridge
         .health_check()

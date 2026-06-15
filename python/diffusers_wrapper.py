@@ -15,6 +15,7 @@ if TYPE_CHECKING:  # Avoid a runtime circular import with the inference module.
 class BackendResult:
     status: str
     output_path: Optional[str] = None
+    prepared_source_path: Optional[str] = None
 
 
 def generate_preview(
@@ -29,11 +30,23 @@ def generate_preview(
     """
 
     if getattr(request, "model", "") == "flux2-klein":
-        output_path = flux2_klein.generate(request, progress)
+        output_path, prepared_source_path = flux2_klein.generate(request, progress)
     else:
-        output_path = flux_kontext.generate(request, progress)
+        output_path, prepared_source_path = flux_kontext.generate(request, progress)
     status = "completed" if output_path else "failed"
-    return BackendResult(status=status, output_path=output_path)
+    return BackendResult(
+        status=status,
+        output_path=output_path,
+        prepared_source_path=prepared_source_path,
+    )
 
 
-__all__ = ["BackendResult", "generate_preview"]
+def preload(model: str, progress: Optional[Callable[..., Any]] = None) -> bool:
+    """Eagerly load the pipeline for ``model`` (called once at app startup)."""
+
+    if model == "flux2-klein":
+        return flux2_klein.preload(progress)
+    return flux_kontext.preload(progress)
+
+
+__all__ = ["BackendResult", "generate_preview", "preload"]

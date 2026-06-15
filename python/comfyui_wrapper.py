@@ -23,6 +23,7 @@ class BackendResult:
 
     status: str
     output_path: Optional[str] = None
+    prepared_source_path: Optional[str] = None
 
 
 def bootstrap_if_required() -> None:
@@ -40,9 +41,15 @@ def generate_preview(
     image while driving the same progress callback.
     """
 
-    output_path = image_ops.render_edit(request, progress=progress, backend="comfyui")
+    output_path, prepared_source_path = image_ops.render_edit(
+        request, progress=progress, backend="comfyui"
+    )
     status = "completed" if output_path else "failed"
-    return BackendResult(status=status, output_path=output_path)
+    return BackendResult(
+        status=status,
+        output_path=output_path,
+        prepared_source_path=prepared_source_path,
+    )
 
 
 __all__ = ["BackendResult", "bootstrap_if_required", "generate_preview"]

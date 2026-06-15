@@ -1,6 +1,7 @@
 import { Flex, Heading, ProgressBar, StatusLight, Text, View } from "@adobe/react-spectrum";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { GenerationProgress, GenerationResponse } from "../services/inference";
+import { BeforeAfterSlider } from "./BeforeAfterSlider";
 
 interface PreviewPanelProps {
   isGenerating: boolean;
@@ -20,6 +21,10 @@ export function PreviewPanel({
     : "Preparing inference runtime";
 
   const completed = !isGenerating && response ? response : null;
+  // Prefer the preprocessed image the model actually edited (same dimensions as
+  // the output → aligned before/after); fall back to the raw uploaded file.
+  const sourceImagePath =
+    completed?.metadata.preparedSourcePath ?? completed?.metadata.sourceImagePath ?? null;
 
   return (
     <Flex direction="column" gap="size-300" height="100%" minHeight={0}>
@@ -36,16 +41,23 @@ export function PreviewPanel({
         {completed && completed.outputPath ? (
           <Flex direction="column" height="100%" minHeight={0} gap="size-200">
             <View flex={1} minHeight={0}>
-              <img
-                src={convertFileSrc(completed.outputPath)}
-                alt="Repainted miniature result"
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "contain",
-                  borderRadius: 8,
-                }}
-              />
+              {sourceImagePath ? (
+                <BeforeAfterSlider
+                  beforeSrc={convertFileSrc(sourceImagePath)}
+                  afterSrc={convertFileSrc(completed.outputPath)}
+                />
+              ) : (
+                <img
+                  src={convertFileSrc(completed.outputPath)}
+                  alt="Repainted miniature result"
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "contain",
+                    borderRadius: 8,
+                  }}
+                />
+              )}
             </View>
             <Flex gap="size-300" wrap justifyContent="center">
               <Text>

@@ -34,6 +34,8 @@ pub struct GenerationMetadata {
     pub guidance_scale: f32,
     #[serde(default)]
     pub source_image_path: Option<String>,
+    #[serde(default)]
+    pub prepared_source_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +117,46 @@ impl From<tokio::task::JoinError> for BridgeError {
     }
 }
 
+/// Build a Python-callable `progress(current, total, message)` hook that forwards
+/// each call to the frontend as a Tauri event. Shared by generation and model
+/// preloading (they only differ by the event name).
+fn build_progress_callback<'py>(
+    py: Python<'py>,
+    app: AppHandle,
+    event: &'static str,
+) -> PyResult<Bound<'py, pyo3::types::PyCFunction>> {
+    pyo3::types::PyCFunction::new_closure_bound(py, None, None, move |args, _kwargs| {
+        let current = args
+            .get_item(0)
+            .ok()
+            .and_then(|value| value.extract::<u32>().ok())
+            .unwrap_or(0);
+        let total = args
+            .get_item(1)
+            .ok()
+            .and_then(|value| value.extract::<u32>().ok())
+            .unwrap_or(0);
+        let message = args
+            .get_item(2)
+            .ok()
+            .and_then(|value| value.extract::<String>().ok());
+        let percentage = if total > 0 {
+            (current as f32 / total as f32) * 100.0
+        } else {
+            0.0
+        };
+        let _ = app.emit(
+            event,
+            ProgressUpdate {
+                current,
+                total,
+                percentage,
+                message,
+            },
+        );
+    })
+}
+
 #[derive(Debug)]
 pub struct PythonBridge {
     module: OnceCell<Py<PyModule>>,
@@ -184,41 +226,7 @@ impl PythonBridge {
                 // A Python-callable progress hook the backend invokes as
                 // `progress(current, total, message)`; each call emits a Tauri event
                 // so the UI can follow the generation step by step.
-                let callback = pyo3::types::PyCFunction::new_closure_bound(
-                    py,
-                    None,
-                    None,
-                    move |args, _kwargs| {
-                        let current = args
-                            .get_item(0)
-                            .ok()
-                            .and_then(|value| value.extract::<u32>().ok())
-                            .unwrap_or(0);
-                        let total = args
-                            .get_item(1)
-                            .ok()
-                            .and_then(|value| value.extract::<u32>().ok())
-                            .unwrap_or(0);
-                        let message = args
-                            .get_item(2)
-                            .ok()
-                            .and_then(|value| value.extract::<String>().ok());
-                        let percentage = if total > 0 {
-                            (current as f32 / total as f32) * 100.0
-                        } else {
-                            0.0
-                        };
-                        let _ = progress_app.emit(
-                            "generation-progress",
-                            ProgressUpdate {
-                                current,
-                                total,
-                                percentage,
-                                message,
-                            },
-                        );
-                    },
-                )?;
+                let callback = build_progress_callback(py, progress_app, "generation-progress")?;
 
                 let result = module.call_method1("generate", (py_request, callback))?;
                 let result_json: String = json.call_method1("dumps", (result,))?.extract()?;
@@ -238,6 +246,32 @@ impl PythonBridge {
         app.emit("generation-progress", complete_update)?;
 
         Ok(response)
+    }
+
+    /// Eagerly load the heavy model pipeline for `model` so the first generation
+    /// is instant. Emits `model-loading-progress` events for the splash screen and
+    /// returns whether a model is resident (false when the ML stack is absent).
+    pub async fn preload_model(
+        &self,
+        app: &AppHandle,
+        model: String,
+    ) -> Result<bool, BridgeError> {
+        let module = self.ensure_initialized(app)?;
+        let progress_app = app.clone();
+
+        let ready = task::spawn_blocking(move || -> Result<bool, BridgeError> {
+            Python::with_gil(|py| -> Result<bool, BridgeError> {
+                let module = module.bind(py);
+                let callback =
+                    build_progress_callback(py, progress_app, "model-loading-progress")?;
+                let result = module.call_method1("preload", (model, callback))?;
+                let ready: bool = result.extract().unwrap_or(true);
+                Ok(ready)
+            })
+        })
+        .await??;
+
+        Ok(ready)
     }
 
     pub async fn health_check(&self) -> Result<bool, BridgeError> {

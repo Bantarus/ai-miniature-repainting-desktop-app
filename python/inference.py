@@ -84,6 +84,21 @@ def load_runtime() -> None:
         print(f"[inference] transformers import check failed: {exc}", file=sys.stderr, flush=True)
 
 
+def preload(model: str, progress: Optional[Callable[..., Any]] = None) -> bool:
+    """Eagerly load the heavy pipeline for ``model`` so the first edit is instant.
+
+    Invoked once at app startup by the Rust bridge (behind the splash screen).
+    Returns ``True`` when a model is resident; placeholder backends report ready
+    immediately since they have nothing heavy to load.
+    """
+
+    if model in ("flux2-klein", "flux-kontext"):
+        return bool(diffusers_wrapper.preload(model, progress))
+    if progress is not None:
+        progress(0, 0, "Ready")
+    return True
+
+
 def generate(
     request_dict: Dict[str, Any],
     progress: Optional[Callable[..., Any]] = None,
@@ -116,10 +131,13 @@ def generate(
             "steps": request.steps,
             "guidanceScale": request.guidance_scale,
             "sourceImagePath": request.source_image_path,
+            # The exact preprocessed image the model edited (same size as the
+            # output), used by the UI for a pixel-aligned before/after.
+            "preparedSourcePath": backend_result.prepared_source_path,
         },
     }
 
     return response
 
 
-__all__ = ["GenerationRequest", "generate", "load_runtime"]
+__all__ = ["GenerationRequest", "generate", "load_runtime", "preload"]

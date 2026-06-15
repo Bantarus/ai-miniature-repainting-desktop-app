@@ -50,15 +50,18 @@ def _tint_for_prompt(prompt: str) -> tuple[int, int, int]:
     return digest[0], digest[1], digest[2]
 
 
-def render_edit(request: Any, progress: ProgressCallback = None, backend: str = "diffusers") -> Optional[str]:
-    """Produce a repainted preview image and return its absolute path.
+def render_edit(
+    request: Any, progress: ProgressCallback = None, backend: str = "diffusers"
+) -> tuple[Optional[str], Optional[str]]:
+    """Produce a repainted preview and return ``(output_path, prepared_source_path)``.
 
-    Returns ``None`` when Pillow is unavailable so the caller can degrade
-    gracefully instead of failing the whole generation.
+    ``prepared_source_path`` is the preprocessed input (same dimensions as the
+    output) so the UI can show an aligned before/after. Returns ``(None, None)``
+    when Pillow is unavailable so the caller can degrade gracefully.
     """
 
     if not _PIL_AVAILABLE:
-        return None
+        return None, None
 
     total = max(1, int(getattr(request, "steps", 30)))
     prompt = str(getattr(request, "prompt", "") or "")
@@ -72,6 +75,12 @@ def render_edit(request: Any, progress: ProgressCallback = None, backend: str = 
 
     if max(image.size) > _MAX_DIMENSION:
         image.thumbnail((_MAX_DIMENSION, _MAX_DIMENSION))
+
+    # Snapshot the preprocessed input *before* the repaint transforms so the UI's
+    # before/after compares like-for-like (same dimensions as the output).
+    stamp = int(time.time() * 1000)
+    prepared_path = os.path.join(_output_dir(), f"source-{stamp}.png")
+    image.copy().save(prepared_path, "PNG")
 
     # Simulate the diffusion sampling loop so the UI progress bar can follow the
     # steps. The real backend will drive these same callbacks from its sampler.
@@ -90,9 +99,9 @@ def render_edit(request: Any, progress: ProgressCallback = None, backend: str = 
 
     _draw_caption(image, f"{model} • {total} steps — {prompt}".strip())
 
-    output_path = os.path.join(_output_dir(), f"edit-{int(time.time() * 1000)}.png")
+    output_path = os.path.join(_output_dir(), f"edit-{stamp}.png")
     image.save(output_path, "PNG")
-    return output_path
+    return output_path, prepared_path
 
 
 def _draw_caption(image: "Image.Image", text: str) -> None:
