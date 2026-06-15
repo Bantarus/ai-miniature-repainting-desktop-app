@@ -14,10 +14,13 @@ import os
 # or diffusers get imported anywhere in the process.
 os.environ.setdefault("HF_HOME", r"E:\hf_cache")
 
+import sys
 import tempfile
 import threading
 import time
 from typing import Any, Callable, Optional
+
+from . import prompt_templates
 
 _MODEL_ID = "black-forest-labs/FLUX.1-Kontext-dev"
 _MAX_DIMENSION = 1024
@@ -140,7 +143,14 @@ def generate(
         raise FileNotFoundError("A source image is required for FLUX Kontext editing.")
 
     total = max(1, int(getattr(request, "steps", 28)))
-    prompt = str(getattr(request, "prompt", "") or "")
+    # Wrap the user's instruction with edit-localizing scaffolding so the repaint
+    # stays on the miniature and preserves the background/composition.
+    prompt = prompt_templates.build_edit_prompt(
+        getattr(request, "prompt", ""),
+        "flux-kontext",
+        getattr(request, "negative_prompt", None),
+    )
+    print(f"[flux-kontext] edit prompt -> {prompt}", file=sys.stderr, flush=True)
     guidance = float(getattr(request, "guidance_scale", 2.5))
 
     if progress is not None:

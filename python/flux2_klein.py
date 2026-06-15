@@ -13,10 +13,13 @@ import os
 # Resolve weights to the on-disk cache *before* huggingface_hub / diffusers import.
 os.environ.setdefault("HF_HOME", r"E:\hf_cache")
 
+import sys
 import tempfile
 import threading
 import time
 from typing import Any, Callable, Optional
+
+from . import prompt_templates
 
 _MODEL_ID = "black-forest-labs/FLUX.2-klein-9B"
 _MAX_DIMENSION = 1024
@@ -140,7 +143,14 @@ def generate(
         raise FileNotFoundError("A source image is required for FLUX.2 Klein editing.")
 
     total = max(1, int(getattr(request, "steps", 4)))
-    prompt = str(getattr(request, "prompt", "") or "")
+    # Wrap the user's instruction with subject-first, edit-localizing scaffolding so
+    # the repaint stays on the miniature and doesn't bleed into the background.
+    prompt = prompt_templates.build_edit_prompt(
+        getattr(request, "prompt", ""),
+        "flux2-klein",
+        getattr(request, "negative_prompt", None),
+    )
+    print(f"[flux2-klein] edit prompt -> {prompt}", file=sys.stderr, flush=True)
     guidance = float(getattr(request, "guidance_scale", 2.5))
 
     if progress is not None:
