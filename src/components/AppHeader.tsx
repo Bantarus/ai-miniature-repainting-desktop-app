@@ -1,4 +1,5 @@
-import { ActionButton, Flex, Heading, Text, View } from "@adobe/react-spectrum";
+import { ActionButton } from "@react-spectrum/s2/ActionButton";
+import { style } from "@react-spectrum/s2/style" with { type: "macro" };
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 
@@ -18,16 +19,35 @@ async function openStackOverview(): Promise<void> {
 
 export function AppHeader(): JSX.Element {
   return (
-    <View backgroundColor="gray-100" borderBottomWidth="thin" borderColor="gray-300" padding="size-200">
-      <Flex alignItems="center" justifyContent="space-between" gap="size-200">
-        <Flex direction="column" gap="size-50">
-          <Heading level={3}>AI Miniature Repainting Studio</Heading>
-          <Text>Iteratively explore miniature paint schemes with production-ready AI tooling.</Text>
-        </Flex>
+    <div
+      className={style({
+        backgroundColor: "gray-100",
+        borderBottomWidth: 1,
+        borderStyle: "solid",
+        borderColor: "gray-300",
+        padding: 16,
+      })}
+    >
+      <div
+        className={style({
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 16,
+        })}
+      >
+        <div className={style({ display: "flex", flexDirection: "column", gap: 4 })}>
+          <h1 className={style({ font: "heading-sm", margin: 0 })}>
+            AI Miniature Repainting Studio
+          </h1>
+          <p className={style({ font: "body-sm", color: "neutral-subdued", margin: 0 })}>
+            Iteratively explore miniature paint schemes with production-ready AI tooling.
+          </p>
+        </div>
         <ActionButton aria-label="View technical stack" onPress={() => void openStackOverview()}>
           Stack Overview
         </ActionButton>
-      </Flex>
-    </View>
+      </div>
+    </div>
   );
 }

@@ -1,59 +1,26 @@
-import { FormEvent, useState } from "react";
-import {
-  ActionButton,
-  Button,
-  Divider,
-  Flex,
-  Form,
-  Item,
-  Picker,
-  Slider,
-  Text,
-  TextArea,
-  View,
-} from "@adobe/react-spectrum";
+import { FormEvent } from "react";
+import { ActionButton } from "@react-spectrum/s2/ActionButton";
+import { Button } from "@react-spectrum/s2/Button";
+import { Divider } from "@react-spectrum/s2/Divider";
+import { Form } from "@react-spectrum/s2/Form";
+import { Picker, PickerItem } from "@react-spectrum/s2/Picker";
+import { Slider } from "@react-spectrum/s2/Slider";
+import { TextArea } from "@react-spectrum/s2/TextArea";
+import { style } from "@react-spectrum/s2/style" with { type: "macro" };
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { GenerationRequest, InferenceModel } from "../services/inference";
+import type { GenerationController } from "../hooks/useGenerationController";
+import type { InferenceModel } from "../services/inference";
+import { baseName } from "../services/layers";
 
 interface PromptPanelProps {
-  isGenerating: boolean;
-  onSubmit: (request: GenerationRequest) => void;
+  controller: GenerationController;
 }
-
-// Per-model step/guidance presets. FLUX.2-klein is distilled (few-step); FLUX.1
-// Kontext needs more steps. Selecting a model applies its preset.
-const MODEL_PRESETS: Record<InferenceModel, { steps: number; guidanceScale: number }> = {
-  "flux2-klein": { steps: 4, guidanceScale: 2.5 },
-  "flux-kontext": { steps: 28, guidanceScale: 2.5 },
-  "qwen-image-edit": { steps: 28, guidanceScale: 4.0 },
-};
-
-const DEFAULT_REQUEST: GenerationRequest = {
-  // These models are instruction-driven: describe the edit to apply to the photo.
-  prompt: "Repaint the miniature with a weathered bronze and emerald color scheme, crisp edge highlights",
-  negativePrompt: "low detail, blurred, unfinished",
-  model: "flux2-klein",
-  steps: MODEL_PRESETS["flux2-klein"].steps,
-  guidanceScale: MODEL_PRESETS["flux2-klein"].guidanceScale,
-  sourceImagePath: undefined,
-};
 
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff"];
 
-function fileName(path: string): string {
-  return path.split(/[\\/]/).pop() ?? path;
-}
-
-export function PromptPanel({ isGenerating, onSubmit }: PromptPanelProps): JSX.Element {
-  const [formState, setFormState] = useState<GenerationRequest>(DEFAULT_REQUEST);
-
-  const updateField = <K extends keyof GenerationRequest>(key: K, value: GenerationRequest[K]) => {
-    setFormState((current) => ({
-      ...current,
-      [key]: value,
-    }));
-  };
+export function PromptPanel({ controller }: PromptPanelProps): JSX.Element {
+  const { settings, baseImage, colorGuidance, isGenerating, selectedLayer } = controller;
 
   const chooseImage = async () => {
     try {
@@ -64,136 +31,177 @@ export function PromptPanel({ isGenerating, onSubmit }: PromptPanelProps): JSX.E
         filters: [{ name: "Images", extensions: IMAGE_EXTENSIONS }],
       });
       if (typeof selected === "string") {
-        updateField("sourceImagePath", selected);
+        controller.setBaseImage(selected, baseName(selected));
       }
     } catch (error) {
       console.error("Failed to open the image picker", error);
     }
   };
 
-  const hasImage = Boolean(formState.sourceImagePath);
+  const editingFrom = selectedLayer ? selectedLayer.name : "Base original";
 
   return (
-    <Flex direction="column" gap="size-200" height="100%">
-      <Text>Prompt Composer</Text>
+    <div className={style({ display: "flex", flexDirection: "column", gap: 16, height: "full" })}>
+      <h2 className={style({ font: "heading-sm", margin: 0 })}>Prompt Composer</h2>
       <Divider size="S" />
       <Form
         onSubmit={(event: FormEvent<HTMLFormElement>) => {
           event.preventDefault();
-          if (!formState.sourceImagePath) {
-            return;
-          }
-          onSubmit(formState);
+          void controller.generate();
         }}
         aria-label="Prompt configuration"
       >
-        <Flex direction="column" gap="size-100">
-          <Text>Source miniature image</Text>
-          {formState.sourceImagePath ? (
-            <Flex direction="column" gap="size-100">
-              <View
-                borderWidth="thin"
-                borderColor="gray-300"
-                borderRadius="medium"
-                padding="size-100"
-                backgroundColor="gray-50"
+        <div className={style({ display: "flex", flexDirection: "column", gap: 8 })}>
+          <span className={style({ font: "ui-sm" })}>Source miniature image</span>
+          {baseImage ? (
+            <div className={style({ display: "flex", flexDirection: "column", gap: 8 })}>
+              <div
+                className={style({
+                  borderWidth: 1,
+                  borderStyle: "solid",
+                  borderColor: "gray-300",
+                  borderRadius: "lg",
+                  padding: 8,
+                  backgroundColor: "gray-50",
+                })}
               >
                 <img
-                  src={convertFileSrc(formState.sourceImagePath)}
-                  alt="Selected miniature"
-                  style={{
+                  src={convertFileSrc(baseImage.sourceImagePath)}
+                  alt="Base miniature"
+                  className={style({
                     display: "block",
-                    width: "100%",
-                    maxHeight: 220,
+                    width: "full",
+                    maxHeight: 200,
                     objectFit: "contain",
-                    borderRadius: 4,
-                  }}
+                    borderRadius: "sm",
+                  })}
                 />
-              </View>
-              <Text UNSAFE_style={{ fontSize: "12px", opacity: 0.75, wordBreak: "break-all" }}>
-                {fileName(formState.sourceImagePath)}
-              </Text>
-              <Flex gap="size-100">
-                <ActionButton onPress={() => void chooseImage()}>Replace…</ActionButton>
-                <ActionButton onPress={() => updateField("sourceImagePath", undefined)}>
-                  Remove
-                </ActionButton>
-              </Flex>
-            </Flex>
+              </div>
+              <span
+                className={style({
+                  font: "body-xs",
+                  color: "neutral-subdued",
+                  wordBreak: "break-all",
+                })}
+              >
+                {baseImage.name}
+              </span>
+              <ActionButton onPress={() => void chooseImage()}>Replace image…</ActionButton>
+            </div>
           ) : (
-            <View
-              borderWidth="thick"
-              borderColor="gray-300"
-              borderRadius="medium"
-              padding="size-300"
-              backgroundColor="gray-50"
+            <div
+              className={style({
+                borderWidth: 2,
+                borderStyle: "solid",
+                borderColor: "gray-300",
+                borderRadius: "lg",
+                padding: 24,
+                backgroundColor: "gray-50",
+              })}
             >
-              <Flex direction="column" alignItems="center" gap="size-150">
-                <Text UNSAFE_style={{ textAlign: "center", opacity: 0.8 }}>
+              <div
+                className={style({
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: 12,
+                })}
+              >
+                <span
+                  className={style({ font: "body-sm", textAlign: "center", color: "neutral-subdued" })}
+                >
                   Choose a miniature photo to repaint
-                </Text>
+                </span>
                 <Button variant="primary" onPress={() => void chooseImage()}>
                   Choose image…
                 </Button>
-              </Flex>
-            </View>
+              </div>
+            </div>
           )}
-        </Flex>
+        </div>
+
         <TextArea
           label="Positive prompt"
-          value={formState.prompt}
-          onChange={(value) => updateField("prompt", value)}
+          value={settings.prompt}
+          onChange={(value) => controller.setSetting("prompt", value)}
           isRequired
           maxLength={500}
         />
+
+        {colorGuidance ? (
+          <div
+            className={style({
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              borderWidth: 1,
+              borderStyle: "solid",
+              borderColor: "gray-300",
+              borderRadius: "sm",
+              padding: 8,
+              backgroundColor: "gray-50",
+            })}
+          >
+            <span className={style({ font: "ui-sm" })}>Palette guidance</span>
+            <span className={style({ font: "body-xs", color: "neutral-subdued" })}>
+              {colorGuidance}
+            </span>
+            <ActionButton isQuiet onPress={() => controller.setColorGuidance("")}>
+              Clear palette guidance
+            </ActionButton>
+          </div>
+        ) : null}
+
         <TextArea
           label="Negative prompt"
-          value={formState.negativePrompt ?? ""}
-          onChange={(value) => updateField("negativePrompt", value)}
+          value={settings.negativePrompt}
+          onChange={(value) => controller.setSetting("negativePrompt", value)}
           maxLength={300}
         />
+
         <Picker
           label="Model"
-          selectedKey={formState.model}
-          onSelectionChange={(key) => {
-            const model = key as InferenceModel;
-            const preset = MODEL_PRESETS[model];
-            setFormState((current) => ({
-              ...current,
-              model,
-              steps: preset.steps,
-              guidanceScale: preset.guidanceScale,
-            }));
-          }}
+          value={settings.model}
+          onChange={(key) => controller.setModel(key as InferenceModel)}
         >
-          <Item key="flux2-klein">FLUX.2 Klein (recommended)</Item>
-          <Item key="flux-kontext">FLUX.1 Kontext</Item>
-          <Item key="qwen-image-edit">Qwen Image Edit (experimental)</Item>
+          <PickerItem id="flux2-klein">FLUX.2 Klein (recommended)</PickerItem>
+          <PickerItem id="flux-kontext">FLUX.1 Kontext</PickerItem>
+          <PickerItem id="qwen-image-edit">Qwen Image Edit (experimental)</PickerItem>
         </Picker>
+
         <Slider
-          label={`Steps: ${formState.steps}`}
+          label="Steps"
           minValue={1}
           maxValue={80}
           step={1}
-          value={formState.steps}
-          onChange={(value) => updateField("steps", Number(value))}
+          value={settings.steps}
+          onChange={(value) => controller.setSetting("steps", Number(value))}
         />
         <Slider
-          label={`Guidance scale: ${formState.guidanceScale.toFixed(1)}`}
+          label="Guidance scale"
           minValue={0}
           maxValue={12}
           step={0.5}
-          value={formState.guidanceScale}
-          onChange={(value) => updateField("guidanceScale", Number(value))}
+          value={settings.guidanceScale}
+          onChange={(value) => controller.setSetting("guidanceScale", Number(value))}
         />
-        <Flex direction="column" gap="size-100">
-          <Button variant="cta" type="submit" isDisabled={isGenerating || !hasImage}>
-            {isGenerating ? "Generating..." : "Generate concept"}
+
+        <div className={style({ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 })}>
+          {baseImage ? (
+            <span className={style({ font: "body-xs", color: "neutral-subdued" })}>
+              Editing from: <strong>{editingFrom}</strong>
+            </span>
+          ) : null}
+          <Button variant="accent" type="submit" isDisabled={isGenerating || !baseImage}>
+            {isGenerating ? "Generating…" : "Generate"}
           </Button>
-          {!hasImage && <Text>Select a source image to enable generation.</Text>}
-          {isGenerating && <Text>Inference is running in the background.</Text>}
-        </Flex>
+          {!baseImage && (
+            <span className={style({ font: "body-xs", color: "neutral-subdued" })}>
+              Select a source image to enable generation.
+            </span>
+          )}
+        </div>
       </Form>
-    </Flex>
+    </div>
   );
 }

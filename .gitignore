@@ -32,6 +32,11 @@ src-tauri/icons/
 models/*
 !models/.gitkeep
 
+# Agent Skills tooling (installed via `npx skills add`, machine-local)
+.agents/
+.claude/skills/
+skills-lock.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

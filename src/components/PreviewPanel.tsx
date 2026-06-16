@@ -1,113 +1,174 @@
-import { Flex, Heading, ProgressBar, StatusLight, Text, View } from "@adobe/react-spectrum";
+import { ProgressBar } from "@react-spectrum/s2/ProgressBar";
+import { StatusLight } from "@react-spectrum/s2/StatusLight";
+import { style } from "@react-spectrum/s2/style" with { type: "macro" };
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { GenerationProgress, GenerationResponse } from "../services/inference";
+import type { GenerationController } from "../hooks/useGenerationController";
 import { BeforeAfterSlider } from "./BeforeAfterSlider";
 
 interface PreviewPanelProps {
-  isGenerating: boolean;
-  progress: GenerationProgress | null;
-  response: GenerationResponse | null;
-  error: string | null;
+  controller: GenerationController;
 }
 
-export function PreviewPanel({
-  isGenerating,
-  progress,
-  response,
-  error,
-}: PreviewPanelProps): JSX.Element {
+export function PreviewPanel({ controller }: PreviewPanelProps): JSX.Element {
+  const { isGenerating, progress, error, baseImage, selectedLayer } = controller;
+
   const progressLabel = progress
     ? progress.message ?? `Step ${progress.current} of ${progress.total}`
     : "Preparing inference runtime";
 
-  const completed = !isGenerating && response ? response : null;
-  // Prefer the preprocessed image the model actually edited (same dimensions as
-  // the output → aligned before/after); fall back to the raw uploaded file.
-  const sourceImagePath =
-    completed?.metadata.preparedSourcePath ?? completed?.metadata.sourceImagePath ?? null;
+  // The selected layer's aligned "before" is the exact preprocessed image the
+  // model edited (same dimensions as the output); fall back to its raw source.
+  const layerBefore = selectedLayer
+    ? selectedLayer.preparedSourcePath ?? selectedLayer.sourceImagePath
+    : null;
+
+  const showLayer = !isGenerating && selectedLayer;
+  const showBase = !isGenerating && !selectedLayer && baseImage;
 
   return (
-    <Flex direction="column" gap="size-300" height="100%" minHeight={0}>
-      <Heading level={4}>Generation Output</Heading>
-      <View
-        flex={1}
-        minHeight={0}
-        borderWidth="thin"
-        borderColor="gray-300"
-        borderRadius="medium"
-        padding="size-300"
-        backgroundColor="gray-100"
+    <div
+      className={style({
+        display: "flex",
+        flexDirection: "column",
+        gap: 24,
+        height: "full",
+        minHeight: 0,
+      })}
+    >
+      <h2 className={style({ font: "heading-sm", margin: 0 })}>
+        {showLayer ? selectedLayer.name : "Generation Output"}
+      </h2>
+      <div
+        className={style({
+          flexGrow: 1,
+          minHeight: 0,
+          borderWidth: 1,
+          borderStyle: "solid",
+          borderColor: "gray-300",
+          borderRadius: "lg",
+          padding: 24,
+          backgroundColor: "gray-100",
+        })}
       >
-        {completed && completed.outputPath ? (
-          <Flex direction="column" height="100%" minHeight={0} gap="size-200">
-            <View flex={1} minHeight={0}>
-              {sourceImagePath ? (
+        {showLayer ? (
+          <div
+            className={style({
+              display: "flex",
+              flexDirection: "column",
+              height: "full",
+              minHeight: 0,
+              gap: 16,
+            })}
+          >
+            <div className={style({ flexGrow: 1, minHeight: 0 })}>
+              {layerBefore ? (
                 <BeforeAfterSlider
-                  beforeSrc={convertFileSrc(sourceImagePath)}
-                  afterSrc={convertFileSrc(completed.outputPath)}
+                  beforeSrc={convertFileSrc(layerBefore)}
+                  afterSrc={convertFileSrc(selectedLayer.resultPath)}
                 />
               ) : (
                 <img
-                  src={convertFileSrc(completed.outputPath)}
+                  src={convertFileSrc(selectedLayer.resultPath)}
                   alt="Repainted miniature result"
-                  style={{
-                    width: "100%",
-                    height: "100%",
+                  className={style({
+                    width: "full",
+                    height: "full",
                     objectFit: "contain",
-                    borderRadius: 8,
-                  }}
+                    borderRadius: "sm",
+                  })}
                 />
               )}
-            </View>
-            <Flex gap="size-300" wrap justifyContent="center">
-              <Text>
-                Model: <strong>{completed.metadata.model}</strong>
-              </Text>
-              <Text>
-                Steps: <strong>{completed.metadata.steps}</strong>
-              </Text>
-              <Text>
-                Guidance: <strong>{completed.metadata.guidanceScale.toFixed(1)}</strong>
-              </Text>
-            </Flex>
-          </Flex>
-        ) : (
-          <Flex
-            direction="column"
-            height="100%"
-            minHeight={0}
-            alignItems="center"
-            justifyContent="center"
-            gap="size-200"
+            </div>
+            <div
+              className={style({
+                display: "flex",
+                gap: 24,
+                flexWrap: "wrap",
+                justifyContent: "center",
+                font: "body-sm",
+              })}
+            >
+              <span>
+                Model: <strong>{selectedLayer.model}</strong>
+              </span>
+              <span>
+                Steps: <strong>{selectedLayer.steps}</strong>
+              </span>
+              <span>
+                Guidance: <strong>{selectedLayer.guidanceScale.toFixed(1)}</strong>
+              </span>
+            </div>
+          </div>
+        ) : showBase ? (
+          <div
+            className={style({
+              display: "flex",
+              flexDirection: "column",
+              height: "full",
+              minHeight: 0,
+              gap: 16,
+              alignItems: "center",
+            })}
           >
-            {!isGenerating && !response && !error && (
-              <Text>
-                Configure a prompt and click generate to produce a new miniature repainting concept.
-              </Text>
+            <img
+              src={convertFileSrc(baseImage.sourceImagePath)}
+              alt="Base miniature"
+              className={style({
+                width: "full",
+                flexGrow: 1,
+                minHeight: 0,
+                objectFit: "contain",
+                borderRadius: "sm",
+              })}
+            />
+            <span className={style({ font: "body-sm", color: "neutral-subdued" })}>
+              Base original — generate an edit to start your layer stack.
+            </span>
+          </div>
+        ) : (
+          <div
+            className={style({
+              display: "flex",
+              flexDirection: "column",
+              height: "full",
+              minHeight: 0,
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 16,
+            })}
+          >
+            {!isGenerating && !baseImage && !error && (
+              <p className={style({ font: "body", textAlign: "center", color: "neutral-subdued" })}>
+                Choose a miniature photo and click Generate to start a repaint.
+              </p>
             )}
             {isGenerating && (
-              <Flex direction="column" gap="size-200" width="100%" maxWidth="size-4600">
-                <Text>Generating imagery with the selected model…</Text>
+              <div
+                className={style({
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 16,
+                  width: "full",
+                  maxWidth: 368,
+                })}
+              >
+                <p className={style({ font: "body", margin: 0, textAlign: "center" })}>
+                  Generating imagery with the selected model…
+                </p>
                 <ProgressBar
                   label={progressLabel}
                   value={progress?.percentage}
                   minValue={0}
                   maxValue={100}
                   isIndeterminate={!progress}
-                  width="100%"
+                  styles={style({ width: "full" })}
                 />
-              </Flex>
-            )}
-            {completed && !completed.outputPath && (
-              <Text>
-                Generation completed, but no output image was produced (the image library may be
-                unavailable on the backend).
-              </Text>
+              </div>
             )}
             {!isGenerating && error && <StatusLight variant="negative">{error}</StatusLight>}
-          </Flex>
+          </div>
         )}
-      </View>
-    </Flex>
+      </div>
+    </div>
   );
 }

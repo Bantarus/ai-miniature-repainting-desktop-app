@@ -1,4 +1,5 @@
 mod commands;
+mod library;
 mod python_bridge;
 
 use python_bridge::PythonBridge;
@@ -13,7 +14,10 @@ pub fn run() {
             commands::generate_image,
             commands::preload_model,
             commands::python_health,
-            commands::resolve_doc_path
+            commands::resolve_doc_path,
+            library::library_import,
+            library::library_save,
+            library::library_load
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

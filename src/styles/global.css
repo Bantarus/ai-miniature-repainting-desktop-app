@@ -4,12 +4,10 @@ html, body, #root {
 
 body {
   margin: 0;
-  font-family: var(--spectrum-alias-body-text-font-family, "Adobe Clean", sans-serif);
-  /* Spectrum's dark theme inverts the gray scale (gray-900 is near-white), and the
-     CSS variable is only defined inside the Provider, so use an explicit dark base. */
-  background-color: #1d1d1d;
-  color-scheme: dark;
 }
+
+/* The dark page background and Adobe Clean font are supplied by
+   @react-spectrum/s2/page.css + data-color-scheme="dark" on <html>. */
 
 /* --- Splash / bootstrap screen --- */
 @keyframes splash-bar-indeterminate {
