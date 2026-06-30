@@ -152,39 +152,46 @@ export function PromptPanel({ controller }: PromptPanelProps): JSX.Element {
           </div>
         ) : null}
 
-        <TextArea
-          label="Negative prompt"
-          value={settings.negativePrompt}
-          onChange={(value) => controller.setSetting("negativePrompt", value)}
-          maxLength={300}
-        />
-
-        <Picker
-          label="Model"
-          value={settings.model}
-          onChange={(key) => controller.setModel(key as InferenceModel)}
-        >
-          <PickerItem id="flux2-klein">FLUX.2 Klein (recommended)</PickerItem>
-          <PickerItem id="flux-kontext">FLUX.1 Kontext</PickerItem>
-          <PickerItem id="qwen-image-edit">Qwen Image Edit (experimental)</PickerItem>
-        </Picker>
-
-        <Slider
-          label="Steps"
-          minValue={1}
-          maxValue={80}
-          step={1}
-          value={settings.steps}
-          onChange={(value) => controller.setSetting("steps", Number(value))}
-        />
-        <Slider
-          label="Guidance scale"
-          minValue={0}
-          maxValue={12}
-          step={0.5}
-          value={settings.guidanceScale}
-          onChange={(value) => controller.setSetting("guidanceScale", Number(value))}
-        />
+        {/* Advanced controls + model choice are dev-only; hobbyists always get
+            the curated production model (FLUX.2 Klein) with no decisions to make. */}
+        {controller.devMode && (
+          <>
+            <span className={style({ font: "ui-sm", color: "neutral-subdued" })}>
+              Advanced (dev mode)
+            </span>
+            <TextArea
+              label="Negative prompt"
+              value={settings.negativePrompt}
+              onChange={(value) => controller.setSetting("negativePrompt", value)}
+              maxLength={300}
+            />
+            <Picker
+              label="Model"
+              value={settings.model}
+              onChange={(key) => controller.setModel(key as InferenceModel)}
+            >
+              <PickerItem id="flux2-klein">FLUX.2 Klein (recommended)</PickerItem>
+              <PickerItem id="flux-kontext">FLUX.1 Kontext</PickerItem>
+              <PickerItem id="qwen-image-edit">Qwen Image Edit (experimental)</PickerItem>
+            </Picker>
+            <Slider
+              label="Steps"
+              minValue={1}
+              maxValue={80}
+              step={1}
+              value={settings.steps}
+              onChange={(value) => controller.setSetting("steps", Number(value))}
+            />
+            <Slider
+              label="Guidance scale"
+              minValue={0}
+              maxValue={12}
+              step={0.5}
+              value={settings.guidanceScale}
+              onChange={(value) => controller.setSetting("guidanceScale", Number(value))}
+            />
+          </>
+        )}
 
         <div className={style({ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 })}>
           {baseImage ? (

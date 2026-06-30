@@ -1,7 +1,13 @@
 import { ActionButton } from "@react-spectrum/s2/ActionButton";
+import { Switch } from "@react-spectrum/s2/Switch";
 import { style } from "@react-spectrum/s2/style" with { type: "macro" };
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
+import type { GenerationController } from "../hooks/useGenerationController";
+
+interface AppHeaderProps {
+  controller: GenerationController;
+}
 
 async function openStackOverview(): Promise<void> {
   try {
@@ -17,7 +23,7 @@ async function openStackOverview(): Promise<void> {
   }
 }
 
-export function AppHeader(): JSX.Element {
+export function AppHeader({ controller }: AppHeaderProps): JSX.Element {
   return (
     <div
       className={style({
@@ -44,9 +50,15 @@ export function AppHeader(): JSX.Element {
             Iteratively explore miniature paint schemes with production-ready AI tooling.
           </p>
         </div>
-        <ActionButton aria-label="View technical stack" onPress={() => void openStackOverview()}>
-          Stack Overview
-        </ActionButton>
+        <div className={style({ display: "flex", alignItems: "center", gap: 16 })}>
+          {/* Dev mode reveals model selection + advanced tuning for curating production. */}
+          <Switch isSelected={controller.devMode} onChange={controller.setDevMode}>
+            Dev mode
+          </Switch>
+          <ActionButton aria-label="View technical stack" onPress={() => void openStackOverview()}>
+            Stack Overview
+          </ActionButton>
+        </div>
       </div>
     </div>
   );

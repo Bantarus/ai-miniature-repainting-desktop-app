@@ -16,7 +16,7 @@ export function AppShell(): JSX.Element {
     // so the UI never follows a light OS preference.
     <Provider colorScheme="dark" background="base" styles={style({ height: "screen" })}>
       <div className={style({ display: "flex", flexDirection: "column", height: "full" })}>
-        <AppHeader />
+        <AppHeader controller={generation} />
         <div className={style({ display: "flex", flexGrow: 1, minHeight: 0 })}>
           {/* Left column: compose an edit + browse paint schemes */}
           <div

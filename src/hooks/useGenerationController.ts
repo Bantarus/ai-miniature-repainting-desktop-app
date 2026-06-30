@@ -41,11 +41,18 @@ const DEFAULT_SETTINGS: EditSettings = {
   guidanceScale: MODEL_PRESETS["flux2-klein"].guidanceScale,
 };
 
+/** The single curated model hobbyists always use; dev mode can override it. */
+const PRODUCTION_MODEL: InferenceModel = "flux2-klein";
+
 export interface GenerationController {
   // generation lifecycle
   isGenerating: boolean;
   progress: GenerationProgress | null;
   error: string | null;
+
+  // dev mode unlocks model selection + advanced tuning (hobbyists get a fixed setup)
+  devMode: boolean;
+  setDevMode: (value: boolean) => void;
 
   // edit composer
   settings: EditSettings;
@@ -82,6 +89,13 @@ export function useGenerationController(): GenerationController {
 
   const [settings, setSettings] = useState<EditSettings>(DEFAULT_SETTINGS);
   const [colorGuidance, setColorGuidance] = useState("");
+  const [devMode, setDevModeState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("devMode") === "1";
+    } catch {
+      return false;
+    }
+  });
 
   const [baseImage, setBaseImageState] = useState<BaseImage | null>(null);
   const [layers, setLayers] = useState<LayerNode[]>([]);
@@ -111,6 +125,15 @@ export function useGenerationController(): GenerationController {
       steps: preset.steps,
       guidanceScale: preset.guidanceScale,
     }));
+  }, []);
+
+  const setDevMode = useCallback((value: boolean) => {
+    setDevModeState(value);
+    try {
+      localStorage.setItem("devMode", value ? "1" : "0");
+    } catch {
+      // Preference persistence is best-effort.
+    }
   }, []);
 
   const appendColorGuidance = useCallback((value: string) => {
@@ -159,9 +182,16 @@ export function useGenerationController(): GenerationController {
   // Low-level engine shared by every generation entry point.
   const runGeneration = useCallback(
     async (parentId: string | null, sourceImagePath: string) => {
+      // In hobbyist mode the model + tuning are fixed to the curated production
+      // setup; dev mode uses the composer's chosen model and advanced settings.
+      const model = devMode ? settings.model : PRODUCTION_MODEL;
+      const preset = MODEL_PRESETS[model];
+      const steps = devMode ? settings.steps : preset.steps;
+      const guidanceScale = devMode ? settings.guidanceScale : preset.guidanceScale;
+
       setIsGenerating(true);
       setError(null);
-      setProgress({ current: 0, total: settings.steps, percentage: 0 });
+      setProgress({ current: 0, total: steps, percentage: 0 });
 
       let unlisten: (() => void) | undefined;
       try {
@@ -180,9 +210,9 @@ export function useGenerationController(): GenerationController {
         const request: GenerationRequest = buildGenerationRequest({
           prompt: fullPrompt,
           negativePrompt: settings.negativePrompt.trim() || undefined,
-          model: settings.model,
-          steps: settings.steps,
-          guidanceScale: settings.guidanceScale,
+          model,
+          steps,
+          guidanceScale,
           sourceImagePath,
         });
 
@@ -225,9 +255,9 @@ export function useGenerationController(): GenerationController {
             preparedSourcePath,
             prompt: fullPrompt,
             negativePrompt: settings.negativePrompt.trim() || undefined,
-            model: settings.model,
-            steps: settings.steps,
-            guidanceScale: settings.guidanceScale,
+            model,
+            steps,
+            guidanceScale,
           };
           setLayers((prev) => [...prev, node]);
           setSelectedLayerId(node.id);
@@ -253,7 +283,7 @@ export function useGenerationController(): GenerationController {
         setIsGenerating(false);
       }
     },
-    [settings, colorGuidance, layers.length],
+    [settings, colorGuidance, layers.length, devMode],
   );
 
   // Generate from the current selection: the selected layer's result, or the
@@ -313,6 +343,8 @@ export function useGenerationController(): GenerationController {
     isGenerating,
     progress,
     error,
+    devMode,
+    setDevMode,
     settings,
     setSetting,
     setModel,
