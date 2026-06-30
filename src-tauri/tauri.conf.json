@@ -20,7 +20,11 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     }
   },
   "bundle": {
@@ -28,7 +32,8 @@
     "targets": "all",
     "icon": [],
     "resources": [
-      "../python/**/*"
+      "../python/**/*",
+      "../docs/TECHNICAL_STACK_DEFINITION.md"
     ]
   }
 }

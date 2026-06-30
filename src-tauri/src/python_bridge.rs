@@ -6,9 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
 use serde::{Deserialize, Serialize};
-use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tokio::task;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +19,8 @@ pub struct GenerationRequest {
     pub model: String,
     pub steps: u32,
     pub guidance_scale: f32,
+    #[serde(default)]
+    pub source_image_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +32,10 @@ pub struct GenerationMetadata {
     pub model: String,
     pub steps: u32,
     pub guidance_scale: f32,
+    #[serde(default)]
+    pub source_image_path: Option<String>,
+    #[serde(default)]
+    pub prepared_source_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +117,46 @@ impl From<tokio::task::JoinError> for BridgeError {
     }
 }
 
+/// Build a Python-callable `progress(current, total, message)` hook that forwards
+/// each call to the frontend as a Tauri event. Shared by generation and model
+/// preloading (they only differ by the event name).
+fn build_progress_callback<'py>(
+    py: Python<'py>,
+    app: AppHandle,
+    event: &'static str,
+) -> PyResult<Bound<'py, pyo3::types::PyCFunction>> {
+    pyo3::types::PyCFunction::new_closure_bound(py, None, None, move |args, _kwargs| {
+        let current = args
+            .get_item(0)
+            .ok()
+            .and_then(|value| value.extract::<u32>().ok())
+            .unwrap_or(0);
+        let total = args
+            .get_item(1)
+            .ok()
+            .and_then(|value| value.extract::<u32>().ok())
+            .unwrap_or(0);
+        let message = args
+            .get_item(2)
+            .ok()
+            .and_then(|value| value.extract::<String>().ok());
+        let percentage = if total > 0 {
+            (current as f32 / total as f32) * 100.0
+        } else {
+            0.0
+        };
+        let _ = app.emit(
+            event,
+            ProgressUpdate {
+                current,
+                total,
+                percentage,
+                message,
+            },
+        );
+    })
+}
+
 #[derive(Debug)]
 pub struct PythonBridge {
     module: OnceCell<Py<PyModule>>,
@@ -122,6 +167,14 @@ pub struct PythonBridge {
 
 impl Default for PythonBridge {
     fn default() -> Self {
+        // Resolve HuggingFace model weights to the on-disk cache on E: so the large
+        // (~24 GB) FLUX weights stay off the nearly-full C: drive. Set before the
+        // interpreter initializes so Python's os.environ picks it up; respect an
+        // existing value if the user already configured one.
+        if std::env::var_os("HF_HOME").is_none() {
+            std::env::set_var("HF_HOME", r"E:\hf_cache");
+        }
+
         pyo3::prepare_freethreaded_python();
 
         Self {
@@ -147,7 +200,7 @@ impl PythonBridge {
         app: &AppHandle,
         request: GenerationRequest,
     ) -> Result<GenerationResponse, BridgeError> {
-        let python_module = self.ensure_initialized(app)?;
+        let module = self.ensure_initialized(app)?;
         let total_steps = request.steps.max(1);
 
         let start_update = ProgressUpdate {
@@ -159,32 +212,27 @@ impl PythonBridge {
 
         app.emit("generation-progress", start_update)?;
 
-        let request_for_python = request;
+        let request_json = serde_json::to_string(&request)?;
+        let progress_app = app.clone();
 
         let response = task::spawn_blocking(move || -> Result<GenerationResponse, BridgeError> {
-            Python::with_gil(|py| -> PyResult<GenerationResponse> {
-                let module = python_module.bind(py);
-                let py_request = PyDict::new_bound(py);
+            Python::with_gil(|py| -> Result<GenerationResponse, BridgeError> {
+                // Marshal the request/response across the FFI boundary as JSON so we
+                // can rely on serde on the Rust side and plain dicts on the Python side.
+                let module = module.bind(py);
+                let json = py.import_bound("json")?;
+                let py_request = json.call_method1("loads", (request_json,))?;
 
-                py_request.set_item("prompt", &request_for_python.prompt)?;
-                py_request.set_item("model", &request_for_python.model)?;
-                py_request.set_item("steps", request_for_python.steps)?;
-                py_request.set_item("guidance_scale", request_for_python.guidance_scale)?;
+                // A Python-callable progress hook the backend invokes as
+                // `progress(current, total, message)`; each call emits a Tauri event
+                // so the UI can follow the generation step by step.
+                let callback = build_progress_callback(py, progress_app, "generation-progress")?;
 
-                match &request_for_python.negative_prompt {
-                    Some(value) => py_request.set_item("negative_prompt", value)?,
-                    None => py_request.set_item("negative_prompt", py.None())?,
-                };
-
-                let result = module.call_method1("generate", (py_request.into_py(py),))?;
-                let json_module = py.import_bound("json")?;
-                let response_json: String =
-                    json_module.call_method1("dumps", (result,))?.extract()?;
-
-                serde_json::from_str(&response_json)
-                    .map_err(|err| PyErr::new::<pyo3::exceptions::PyValueError, _>(err.to_string()))
+                let result = module.call_method1("generate", (py_request, callback))?;
+                let result_json: String = json.call_method1("dumps", (result,))?.extract()?;
+                let response: GenerationResponse = serde_json::from_str(&result_json)?;
+                Ok(response)
             })
-            .map_err(BridgeError::from)
         })
         .await??;
 
@@ -198,6 +246,32 @@ impl PythonBridge {
         app.emit("generation-progress", complete_update)?;
 
         Ok(response)
+    }
+
+    /// Eagerly load the heavy model pipeline for `model` so the first generation
+    /// is instant. Emits `model-loading-progress` events for the splash screen and
+    /// returns whether a model is resident (false when the ML stack is absent).
+    pub async fn preload_model(
+        &self,
+        app: &AppHandle,
+        model: String,
+    ) -> Result<bool, BridgeError> {
+        let module = self.ensure_initialized(app)?;
+        let progress_app = app.clone();
+
+        let ready = task::spawn_blocking(move || -> Result<bool, BridgeError> {
+            Python::with_gil(|py| -> Result<bool, BridgeError> {
+                let module = module.bind(py);
+                let callback =
+                    build_progress_callback(py, progress_app, "model-loading-progress")?;
+                let result = module.call_method1("preload", (model, callback))?;
+                let ready: bool = result.extract().unwrap_or(true);
+                Ok(ready)
+            })
+        })
+        .await??;
+
+        Ok(ready)
     }
 
     pub async fn health_check(&self) -> Result<bool, BridgeError> {
@@ -232,35 +306,48 @@ impl PythonBridge {
             return Ok(module.clone());
         }
 
-        let python_dir = Self::locate_python_root(app)?;
-        let module_root = python_dir.parent().ok_or_else(|| {
-            BridgeError::new("Python runtime directory is missing a parent directory")
-        })?;
-        let python_path = Self::build_pythonpath(module_root)?;
+        let python_root = Self::locate_python_root(app)?;
+        let python_path = Self::build_pythonpath(&python_root)?;
 
         std::env::set_var("PYTHONPATH", &python_path);
-        self.spawn_sidecar(&python_dir, &python_path)?;
+        self.spawn_sidecar(&python_root, &python_path)?;
+
+        // `python` is a package (it contains __init__.py) imported as
+        // `python.inference`, so the directory that *contains* the `python`
+        // folder — i.e. its parent — must be on sys.path, not the folder itself.
+        let package_parent = python_root.parent().unwrap_or(python_root.as_path());
+
+        // The heavy ML stack (torch+CUDA, diffusers, …) lives in a project-local
+        // venv on E:. Ensure its site-packages are importable by the embedded
+        // interpreter (for an embedded venv, Python does not auto-add this).
+        let venv_site = package_parent
+            .join(".venv")
+            .join("Lib")
+            .join("site-packages");
 
         let module = Python::with_gil(|py| -> PyResult<Py<PyModule>> {
             let sys = py.import_bound("sys")?;
-            let sys_path = sys.getattr("path")?.downcast_into::<PyList>()?;
+            let sys_path = sys.getattr("path")?.downcast_into::<pyo3::types::PyList>()?;
 
-            let root_str = module_root.to_str().ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Invalid Python module path")
-            })?;
-
-            if !sys_path.iter().any(|entry| {
-                entry
-                    .extract::<&str>()
-                    .map(|p| p == root_str)
-                    .unwrap_or(false)
-            }) {
-                sys_path.insert(0, root_str)?;
+            // Prepend both the venv site-packages and the project root if absent.
+            for path in [venv_site.as_path(), package_parent] {
+                let Some(path_str) = path.to_str() else {
+                    continue;
+                };
+                let already_present = sys_path.iter().any(|entry| {
+                    entry
+                        .extract::<String>()
+                        .map(|p| p == path_str)
+                        .unwrap_or(false)
+                });
+                if !already_present {
+                    sys_path.insert(0, path_str)?;
+                }
             }
 
             let module = PyModule::import_bound(py, "python.inference")?;
             module.call_method0("load_runtime")?;
-            Ok(module.unbind())
+            Ok(module.into())
         })?;
 
         self.module
@@ -272,14 +359,14 @@ impl PythonBridge {
         Ok(module)
     }
 
-    fn spawn_sidecar(&self, python_dir: &Path, python_path: &OsString) -> Result<(), BridgeError> {
+    fn spawn_sidecar(&self, python_root: &Path, python_path: &OsString) -> Result<(), BridgeError> {
         let mut guard = self.sidecar.lock();
 
         if guard.is_some() {
             return Ok(());
         }
 
-        let Some((program, args)) = Self::sidecar_invocation(python_dir) else {
+        let Some((program, args)) = Self::sidecar_invocation(python_root) else {
             return Err(BridgeError::new(
                 "Unable to locate Python sidecar executable or script",
             ));
@@ -301,12 +388,12 @@ impl PythonBridge {
         Ok(())
     }
 
-    fn sidecar_invocation(python_dir: &Path) -> Option<(PathBuf, Vec<OsString>)> {
+    fn sidecar_invocation(python_root: &Path) -> Option<(PathBuf, Vec<OsString>)> {
         if let Some(explicit) = std::env::var_os("PYTHON_SIDECAR") {
             return Some((PathBuf::from(explicit), Vec::new()));
         }
 
-        let dist_dir = python_dir.join("dist");
+        let dist_dir = python_root.join("dist");
         let binary_name = if cfg!(windows) {
             "inference-sidecar.exe"
         } else {
@@ -318,7 +405,7 @@ impl PythonBridge {
             return Some((binary_path, Vec::new()));
         }
 
-        let script_path = python_dir.join("sidecar.py");
+        let script_path = python_root.join("sidecar.py");
         if script_path.exists() {
             let interpreter = std::env::var_os("PYTHON_EXECUTABLE")
                 .map(PathBuf::from)
@@ -336,12 +423,12 @@ impl PythonBridge {
         None
     }
 
-    fn build_pythonpath(module_root: &Path) -> Result<OsString, BridgeError> {
-        let mut paths = vec![module_root.to_path_buf()];
+    fn build_pythonpath(python_root: &Path) -> Result<OsString, BridgeError> {
+        let mut paths = vec![python_root.to_path_buf()];
 
         if let Some(existing) = std::env::var_os("PYTHONPATH") {
             for entry in std::env::split_paths(&existing) {
-                if entry != module_root {
+                if entry != python_root {
                     paths.push(entry);
                 }
             }
@@ -351,6 +438,9 @@ impl PythonBridge {
     }
 
     fn locate_python_root(app: &AppHandle) -> Result<PathBuf, BridgeError> {
+        use tauri::path::BaseDirectory;
+        use tauri::Manager;
+
         if let Ok(resource) = app.path().resolve("python", BaseDirectory::Resource) {
             if resource.exists() {
                 return Ok(resource);

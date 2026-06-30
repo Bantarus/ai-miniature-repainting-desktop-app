@@ -15,11 +15,13 @@ dist-ssr
 # Python artifacts
 __pycache__/
 *.py[cod]
+.venv/
 python/.venv/
 python/build/
 python/dist/
 python/*.spec
-.venv/
+_verify_*.py
+_download_*.py
 
 # Rust build output
 src-tauri/target
@@ -29,6 +31,11 @@ src-tauri/icons/
 # Model assets
 models/*
 !models/.gitkeep
+
+# Agent Skills tooling (installed via `npx skills add`, machine-local)
+.agents/
+.claude/skills/
+skills-lock.json
 
 # Editor directories and files
 .vscode/*
