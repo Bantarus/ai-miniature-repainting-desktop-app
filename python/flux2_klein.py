@@ -1,9 +1,18 @@
 """Real FLUX.2-klein-9B image-editing backend.
 
-FLUX.2-klein is a distilled few-step editing model. Its components fit on a 24 GB
-GPU one-at-a-time (Qwen3-8B text encoder ~16 GB, transformer ~18 GB), so
-``enable_model_cpu_offload`` keeps only the active one resident — no quantization
-needed. The pipeline is loaded lazily and cached for the process lifetime.
+FLUX.2-klein is a distilled few-step editing model. Both large components (the
+~18 GB bf16 transformer and the ~16 GB Qwen3-8B text encoder) are run in 4-bit
+NF4 (~5 GB each) and kept resident on the GPU together — no CPU offload.
+
+Why: on Windows, every byte a model occupies — CPU tensors *and* WDDM-backed
+GPU allocations — charges the system commit limit (RAM + pagefile). Offloading
+the bf16 text encoder kept a 16 GB CPU copy alive, pushing generation to ~25 GB
+of commit, which segfaults (0xc0000005) whenever dev tools eat the headroom.
+All-NF4 on GPU needs ~13 GB commit / ~11 GB VRAM and fits a 24 GB card easily.
+
+The quantized weights are cached under ``HF_HOME/prequant`` on first load, so
+later loads skip the bf16 materialization peak entirely and start in seconds.
+The pipeline is loaded lazily and cached for the process lifetime.
 """
 
 from __future__ import annotations
@@ -44,11 +53,11 @@ def _output_dir() -> str:
     return directory
 
 
-def _nf4_transformer_dir() -> str:
-    """Where the pre-quantized (4-bit NF4) transformer is cached so later loads
-    skip the ~18 GB bf16 peak. Kept next to the HF cache on the big (E:) drive."""
+def _nf4_dir(component: str) -> str:
+    """Where a pre-quantized (4-bit NF4) component is cached so later loads skip
+    the bf16 materialization peak. Kept next to the HF cache on the big (E:) drive."""
     root = os.environ.get("HF_HOME") or r"E:\hf_cache"
-    return os.path.join(root, "prequant", "flux2-klein-nf4-transformer")
+    return os.path.join(root, "prequant", f"flux2-klein-nf4-{component}")
 
 
 def _report(progress: Optional[Callable[..., Any]], message: str) -> None:
@@ -76,26 +85,23 @@ def _load_pipeline(progress: Optional[Callable[..., Any]] = None):
             Flux2KleinPipeline,
             Flux2Transformer2DModel,
         )
-
-        # The bf16 transformer (~18 GB) plus activations still overflows 24 GB during
-        # denoising (spilling to system RAM → very slow). Load it in 4-bit NF4
-        # (~5 GB) so it fits with plenty of headroom and runs fast on the GPU.
-        nf4_config = DiffusersBitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
+        from transformers import (
+            BitsAndBytesConfig as TransformersBitsAndBytesConfig,
+            Qwen3ForCausalLM,
         )
-        # First successful load quantizes the bf16 transformer to 4-bit and caches
-        # the ~5-6 GB result to disk. Later loads read that directly, avoiding the
-        # ~18 GB bf16 peak RAM (and the re-quantization cost) entirely.
-        quant_dir = _nf4_transformer_dir()
+
+        # ── Transformer: NF4 on the GPU ──────────────────────────────────────
+        quant_dir = _nf4_dir("transformer")
         transformer = None
         if os.path.isdir(quant_dir):
             try:
                 _report(progress, "Loading pre-quantized transformer…")
+                # device_map="cuda" materializes the deserialized 4-bit weights
+                # straight on the GPU (no CPU staging copy charging commit).
                 transformer = Flux2Transformer2DModel.from_pretrained(
                     quant_dir,
                     torch_dtype=torch.bfloat16,
+                    device_map="cuda",
                 )
             except Exception as exc:  # any issue → fall back to a fresh quantize
                 print(f"[flux2] pre-quantized load failed ({exc}); re-quantizing", flush=True)
@@ -105,7 +111,11 @@ def _load_pipeline(progress: Optional[Callable[..., Any]] = None):
             transformer = Flux2Transformer2DModel.from_pretrained(
                 _MODEL_ID,
                 subfolder="transformer",
-                quantization_config=nf4_config,
+                quantization_config=DiffusersBitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                ),
                 torch_dtype=torch.bfloat16,
             )
             try:
@@ -113,16 +123,51 @@ def _load_pipeline(progress: Optional[Callable[..., Any]] = None):
                 transformer.save_pretrained(quant_dir)
             except Exception as exc:  # caching is best-effort; never break the load
                 print(f"[flux2] could not cache quantized transformer: {exc}", flush=True)
+
+        # ── Text encoder: NF4 on the GPU (same cache-then-load pattern) ──────
+        encoder_dir = _nf4_dir("text-encoder")
+        text_encoder = None
+        if os.path.isdir(encoder_dir):
+            try:
+                _report(progress, "Loading pre-quantized text encoder…")
+                text_encoder = Qwen3ForCausalLM.from_pretrained(
+                    encoder_dir,
+                    torch_dtype=torch.bfloat16,
+                    device_map="cuda",
+                )
+            except Exception as exc:
+                print(f"[flux2] pre-quantized encoder load failed ({exc}); re-quantizing", flush=True)
+                text_encoder = None
+        if text_encoder is None:
+            _report(progress, "Loading text encoder (4-bit NF4)…")
+            text_encoder = Qwen3ForCausalLM.from_pretrained(
+                _MODEL_ID,
+                subfolder="text_encoder",
+                quantization_config=TransformersBitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                ),
+                torch_dtype=torch.bfloat16,
+                device_map="cuda",
+            )
+            try:
+                _report(progress, "Caching quantized text encoder for fast future loads…")
+                text_encoder.save_pretrained(encoder_dir)
+            except Exception as exc:
+                print(f"[flux2] could not cache quantized text encoder: {exc}", flush=True)
+
         _report(progress, "Loading pipeline components…")
         pipeline = Flux2KleinPipeline.from_pretrained(
             _MODEL_ID,
             transformer=transformer,
+            text_encoder=text_encoder,
             torch_dtype=torch.bfloat16,
         )
-        # Stream the (large, bf16) Qwen3 text encoder on/off the GPU; the quantized
-        # transformer stays resident during the few-step denoising loop.
-        _report(progress, "Optimizing for GPU (CPU offload)…")
-        pipeline.enable_model_cpu_offload()
+        # Both quantized models are already resident on the GPU; only the small
+        # bf16 VAE still needs moving. Everything stays put — no offload hooks.
+        _report(progress, "Moving VAE to GPU…")
+        pipeline.vae.to("cuda")
         _pipeline = pipeline
         return _pipeline
 
