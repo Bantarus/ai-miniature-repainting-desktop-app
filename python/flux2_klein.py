@@ -44,6 +44,13 @@ def _output_dir() -> str:
     return directory
 
 
+def _nf4_transformer_dir() -> str:
+    """Where the pre-quantized (4-bit NF4) transformer is cached so later loads
+    skip the ~18 GB bf16 peak. Kept next to the HF cache on the big (E:) drive."""
+    root = os.environ.get("HF_HOME") or r"E:\hf_cache"
+    return os.path.join(root, "prequant", "flux2-klein-nf4-transformer")
+
+
 def _report(progress: Optional[Callable[..., Any]], message: str) -> None:
     """Best-effort status update during the (slow, opaque) model load."""
     if progress is None:
@@ -78,13 +85,34 @@ def _load_pipeline(progress: Optional[Callable[..., Any]] = None):
             bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.bfloat16,
         )
-        _report(progress, "Loading transformer (4-bit NF4)…")
-        transformer = Flux2Transformer2DModel.from_pretrained(
-            _MODEL_ID,
-            subfolder="transformer",
-            quantization_config=nf4_config,
-            torch_dtype=torch.bfloat16,
-        )
+        # First successful load quantizes the bf16 transformer to 4-bit and caches
+        # the ~5-6 GB result to disk. Later loads read that directly, avoiding the
+        # ~18 GB bf16 peak RAM (and the re-quantization cost) entirely.
+        quant_dir = _nf4_transformer_dir()
+        transformer = None
+        if os.path.isdir(quant_dir):
+            try:
+                _report(progress, "Loading pre-quantized transformer…")
+                transformer = Flux2Transformer2DModel.from_pretrained(
+                    quant_dir,
+                    torch_dtype=torch.bfloat16,
+                )
+            except Exception as exc:  # any issue → fall back to a fresh quantize
+                print(f"[flux2] pre-quantized load failed ({exc}); re-quantizing", flush=True)
+                transformer = None
+        if transformer is None:
+            _report(progress, "Loading transformer (4-bit NF4)…")
+            transformer = Flux2Transformer2DModel.from_pretrained(
+                _MODEL_ID,
+                subfolder="transformer",
+                quantization_config=nf4_config,
+                torch_dtype=torch.bfloat16,
+            )
+            try:
+                _report(progress, "Caching quantized transformer for fast future loads…")
+                transformer.save_pretrained(quant_dir)
+            except Exception as exc:  # caching is best-effort; never break the load
+                print(f"[flux2] could not cache quantized transformer: {exc}", flush=True)
         _report(progress, "Loading pipeline components…")
         pipeline = Flux2KleinPipeline.from_pretrained(
             _MODEL_ID,
