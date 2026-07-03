@@ -12,6 +12,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { GenerationController } from "../hooks/useGenerationController";
 import type { InferenceModel } from "../services/inference";
 import { baseName } from "../services/layers";
+import { isTauri } from "../services/env";
 
 interface PromptPanelProps {
   controller: GenerationController;
@@ -43,6 +44,19 @@ export function PromptPanel({ controller }: PromptPanelProps): JSX.Element {
   return (
     <div className={style({ display: "flex", flexDirection: "column", gap: 16, height: "full" })}>
       <h2 className={style({ font: "heading-sm", margin: 0 })}>Prompt Composer</h2>
+      {!isTauri() && (
+        <div
+          className={style({
+            backgroundColor: "notice-subtle",
+            borderRadius: "sm",
+            padding: 8,
+            font: "body-xs",
+          })}
+        >
+          Browser preview — image picking, generation, and saving need the desktop app. Run{" "}
+          <code>npm run tauri dev</code> (or launch the built app).
+        </div>
+      )}
       <Divider size="S" />
       <Form
         onSubmit={(event: FormEvent<HTMLFormElement>) => {

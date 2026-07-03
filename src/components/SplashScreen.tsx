@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { DEFAULT_MODEL, listenToModelLoading, preloadModel } from "../services/inference";
+import { isTauri } from "../services/env";
 
 interface SplashScreenProps {
   /** Called once the model is resident (or the user chooses to continue anyway). */
@@ -25,6 +26,16 @@ export function SplashScreen({ onReady }: SplashScreenProps): JSX.Element {
     void (async () => {
       setError(null);
       setStatus("Starting up…");
+
+      // The model, file dialog, generation, and library all go through Tauri's
+      // IPC, which only exists in the desktop webview. In a plain browser, skip
+      // the preload and hand off so the UI can still be previewed.
+      if (!isTauri()) {
+        if (!cancelled) {
+          onReady();
+        }
+        return;
+      }
 
       try {
         unlisten = await listenToModelLoading((event) => {
